@@ -1,0 +1,11 @@
+{
+	"name": "wpelevator/update-client",
+	"type": "library",
+	"minimum-stability": "dev",
+	"autoload": {
+		"classmap": [
+			"php/"
+		]
+	},
+	"require": {}
+}
