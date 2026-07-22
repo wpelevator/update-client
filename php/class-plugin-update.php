@@ -10,16 +10,16 @@ class Plugin_Update {
 
 	private $plugin_basename;
 
-	public function __construct( $plugin_basename, $api_url ) {
+	public function __construct( string $plugin_basename, string $api_url ) {
 		$this->plugin_basename = $plugin_basename;
 		$this->api_url = $api_url;
 	}
 
-	public function get_slug() {
+	public function get_slug(): string {
 		return dirname( $this->plugin_basename );
 	}
 
-	public function get_api_url() {
+	public function get_api_url(): string {
 		if ( ! wp_http_supports( [ 'ssl' ] ) ) {
 			return set_url_scheme( $this->api_url, 'http' );
 		}
@@ -27,10 +27,10 @@ class Plugin_Update {
 		return $this->api_url;
 	}
 
-	public static function from_update_uri_header( $plugin_basename ) {
+	public static function from_update_uri_header( string $plugin_basename ): self {
 		$plugins = get_plugins();
 
-		if ( isset( $plugins[ $plugin_basename ]['UpdateURI'] ) ) {
+		if ( ! isset( $plugins[ $plugin_basename ]['UpdateURI'] ) ) {
 			throw new RuntimeException( 'Failed to find the Update URI header in the plugin file' );
 		}
 
@@ -87,7 +87,7 @@ class Plugin_Update {
 	 *
 	 * @return object
 	 */
-	public function check_update( $updates ) {
+	public function check_update( object $updates ): object {
 		if ( ! isset( $updates->last_checked ) ) {
 			return $updates;
 		}
@@ -107,7 +107,7 @@ class Plugin_Update {
 		return $updates;
 	}
 
-	private function get_update_for_version( $version ) {
+	private function get_update_for_version( string $version ): ?object {
 		$payload = [
 			'body' => [
 				'package' => $this->plugin_basename,
