@@ -281,7 +281,7 @@ class Plugin_Require {
 
 		$signed_package = $this->get_signed_package();
 
-		if ( $signed_package && ! $signed_package->can_verify() ) {
+		if ( $signed_package && ! $signed_package::can_verify() ) {
 			$this->errors[] = new WP_Error(
 				'plugin_signature_unsupported',
 				sprintf(

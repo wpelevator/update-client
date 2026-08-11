@@ -19,6 +19,16 @@ class Plugin_Update {
 	 */
 	private array $download_urls_with_auth = [];
 
+	/**
+	 * Update resolved from the update server during this request.
+	 *
+	 * Both the update transient filter and the Update URI hostname filter ask for it,
+	 * so the lookup is kept to a single request. False once a lookup came back empty.
+	 *
+	 * @var object|false|null
+	 */
+	private $update = null;
+
 	public function __construct( string $plugin_basename, string $api_url, array $config = [] ) {
 		$this->plugin_basename = $plugin_basename;
 		$this->api_url = $api_url;
@@ -147,6 +157,9 @@ class Plugin_Update {
 			4
 		);
 
+		// Serve the plugin information modal from the same endpoint.
+		add_filter( 'plugins_api', [ $this, 'filter_plugins_api' ], 10, 3 );
+
 		// Verify the package signature and track the update package download URLs.
 		add_filter( 'upgrader_pre_download', [ $this, 'filter_upgrader_pre_download' ], 10, 4 );
 
@@ -255,12 +268,24 @@ class Plugin_Update {
 	* }
 	 */
 	public function update_by_hostname( $update, $plugin_data, $plugin_file, $locales ) {
-		return null;
+		if ( $this->plugin_basename === $plugin_file ) {
+			$our_update = $this->get_update( (array) $plugin_data, (array) $locales );
+
+			if ( $our_update ) {
+				return $our_update;
+			}
+		}
+
+		return $update;
 	}
 
 	/**
 	 * Append our update after wp_update_plugins().
 	 * Also called by wp_plugin_update_row().
+	 *
+	 * Covers the plugins whose Update URI header does not point at the configured
+	 * update server, since WP core dispatches the update_plugins_{$hostname} filter
+	 * off that header alone.
 	 *
 	 * @return object
 	 */
@@ -269,26 +294,141 @@ class Plugin_Update {
 			return $updates;
 		}
 
-		$plugins = get_plugins();
+		$plugin_data = $this->get_plugin_data();
 
-		if ( ! empty( $plugins[ $this->plugin_basename ] ) ) {
-			$update = $this->get_update_for_version( $plugins[ $this->plugin_basename ]['Version'] );
+		if ( empty( $plugin_data['Version'] ) ) {
+			return $updates; // The plugin we are responsible for is not installed.
+		}
 
-			if ( ! empty( $update->new_version ) ) {
-				$updates->response[ $this->plugin_basename ] = $update;
-				$updates->checked[ $this->plugin_basename ] = $update->new_version;
-				$updates->last_checked = time();
-			}
+		$update = $this->get_update( $plugin_data );
+
+		if ( ! $update ) {
+			return $updates;
+		}
+
+		$updates->checked[ $this->plugin_basename ] = $plugin_data['Version'];
+
+		// The update server responds with its latest package, which is not necessarily newer.
+		if ( version_compare( $update->new_version, $plugin_data['Version'], '>' ) ) {
+			unset( $updates->no_update[ $this->plugin_basename ] );
+
+			$updates->response[ $this->plugin_basename ] = $update;
+			$updates->last_checked = time();
+		} else {
+			unset( $updates->response[ $this->plugin_basename ] );
+
+			$updates->no_update[ $this->plugin_basename ] = $update;
 		}
 
 		return $updates;
 	}
 
-	private function get_update_for_version( string $version ): ?object {
+	/**
+	 * Serve the "View details" modal of our plugin from the update server.
+	 *
+	 * @param false|object|array $result The result object or array. Default false.
+	 * @param string             $action The type of information being requested.
+	 * @param object             $args   Plugin API arguments.
+	 * @return false|object|array
+	 */
+	public function filter_plugins_api( $result, $action, $args ) {
+		if ( ! empty( $result ) || 'plugin_information' !== $action ) {
+			return $result;
+		}
+
+		if ( empty( $args->slug ) || $this->get_slug() !== $args->slug ) {
+			return $result; // Not the plugin we are responsible for.
+		}
+
+		$information = $this->request_plugin_information( $args );
+
+		if ( $information ) {
+			return $information;
+		}
+
+		return $result;
+	}
+
+	private function request_plugin_information( object $args ): ?object {
+		$request_args = [
+			'timeout' => 15,
+		];
+
+		$authorization = $this->get_authorization_header();
+
+		if ( $authorization ) {
+			$request_args['headers'] = [
+				'Authorization' => $authorization,
+			];
+		}
+
+		$response = wp_remote_get(
+			add_query_arg(
+				[
+					'action' => 'plugin_information',
+					'request' => (array) $args,
+				],
+				$this->get_api_url()
+			),
+			$request_args
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return null;
+		}
+
+		$information = json_decode( wp_remote_retrieve_body( $response ), true );
+
+		if ( empty( $information ) || ! is_array( $information ) ) {
+			return null;
+		}
+
+		return (object) $information; // Match the WP core info response.
+	}
+
+	private function get_plugin_data(): array {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$plugins = get_plugins();
+
+		return $plugins[ $this->plugin_basename ] ?? [];
+	}
+
+	/**
+	 * The update for our plugin, looked up once per request.
+	 *
+	 * @param array    $plugin_data Plugin headers of the installed plugin.
+	 * @param string[] $locales     Installed locales to look up translations for.
+	 */
+	private function get_update( array $plugin_data, array $locales = [] ): ?object {
+		if ( ! isset( $this->update ) ) {
+			$this->update = $this->request_update( $plugin_data, $locales ) ?? false;
+		}
+
+		if ( $this->update ) {
+			return $this->update;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Ask the update server for the update of our plugin.
+	 *
+	 * Posts the plugin headers the same way wp_update_plugins() does for the
+	 * WordPress.org API, which is the payload the update server expects, and reads
+	 * the update keyed by our plugin basename out of the response.
+	 *
+	 * @param array    $plugin_data Plugin headers of the installed plugin.
+	 * @param string[] $locales     Installed locales to look up translations for.
+	 */
+	private function request_update( array $plugin_data, array $locales ): ?object {
 		$payload = [
 			'body' => [
-				'package' => $this->plugin_basename,
-				'version' => $version,
+				'plugins' => wp_json_encode( [ $this->plugin_basename => $plugin_data ] ),
+				'locale' => wp_json_encode( array_values( $locales ) ),
 			],
 		];
 
@@ -302,10 +442,31 @@ class Plugin_Update {
 
 		$response = wp_remote_post( $this->get_api_url(), $payload );
 
-		if ( ! is_wp_error( $response ) ) {
-			return json_decode( wp_remote_retrieve_body( $response ) );
+		if ( is_wp_error( $response ) ) {
+			return null;
 		}
 
-		return null;
+		$updates = json_decode( wp_remote_retrieve_body( $response ), true );
+
+		if ( empty( $updates[ $this->plugin_basename ] ) || ! is_array( $updates[ $this->plugin_basename ] ) ) {
+			return null;
+		}
+
+		$update = $updates[ $this->plugin_basename ]; // Extract the update for our plugin.
+
+		$version = $update['version'] ?? $update['new_version'] ?? null;
+		if ( empty( $version ) ) {
+			return null;
+		}
+
+		$update['version'] = $version;
+		$update['new_version'] = $version;
+		$update['plugin'] = $this->plugin_basename;
+
+		if ( empty( $update['slug'] ) ) {
+			$update['slug'] = $this->get_slug();
+		}
+
+		return (object) $update;
 	}
 }

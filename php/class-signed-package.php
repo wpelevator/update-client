@@ -33,7 +33,7 @@ class Signed_Package {
 	/**
 	 * If the current environment supports the package signature verification.
 	 */
-	public function can_verify(): bool {
+	public static function can_verify(): bool {
 		return function_exists( 'sodium_crypto_sign_verify_detached' );
 	}
 
