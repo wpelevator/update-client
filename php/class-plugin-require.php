@@ -2,7 +2,9 @@
 
 namespace WPElevator\Update_Client;
 
+use RuntimeException;
 use WP_Error;
+use WP_Upgrader;
 use Plugin_Upgrader;
 use Automatic_Upgrader_Skin;
 
@@ -14,8 +16,6 @@ class Plugin_Require {
 
 	private array $errors = [];
 
-	private ?Package_Signature $package_signature;
-
 	public function __construct( array $config ) {
 		$this->config = $config;
 	}
@@ -25,20 +25,17 @@ class Plugin_Require {
 		add_action( 'network_admin_notices', [ $this, 'action_render_notice' ] );
 		add_action( 'load-plugins.php', [ $this, 'action_install_plugin' ] );
 
-		$signing_key = $this->get_signing_key();
+		// Download and verify the package signature when installing the plugin.
+		add_filter( 'upgrader_pre_download', [ $this, 'filter_upgrader_pre_download' ], 10, 3 );
 
-		if ( $signing_key ) {
-			$this->package_signature = new Package_Signature( $signing_key );
-			$this->package_signature->init();
-
-			// Request the package signature verification when downloading the plugin.
-			add_filter( 'upgrader_pre_download', [ $this, 'filter_upgrader_pre_download' ], 10, 2 );
-		}
+		// Add the authorization header when downloading the plugin.
+		add_filter( 'http_request_args', [ $this, 'filter_http_request_add_auth_headers' ], 10, 2 );
 	}
 
 	private function get_config(): array {
 		$config_default = [
 			// TODO: Add the signing_key to the default config.
+			'license_key' => null,
 			'download_url' => 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot',
 			'basename' => 'update-pilot/update-pilot.php',
 			'name' => 'Update Pilot',
@@ -46,7 +43,22 @@ class Plugin_Require {
 			'network' => true,
 		];
 
-		return array_merge( $config_default, $this->config );
+		$config = array_merge( $config_default, $this->config );
+
+		/**
+		 * Filters the configuration for requiring the plugin.
+		 *
+		 * The filter name includes the basename of the required plugin (resolved from
+		 * the unfiltered configuration) so that multiple bundled copies of the library
+		 * can be targeted independently. It is distinct from the Plugin_Update
+		 * configuration filter to allow for plugins that are involved in both roles.
+		 *
+		 * @param array $config The required plugin configuration.
+		 */
+		return apply_filters(
+			sprintf( 'wpelevator_update_client__require_config__%s', $config['basename'] ),
+			$config
+		);
 	}
 
 	private function get_config_value( string $key ) {
@@ -81,17 +93,118 @@ class Plugin_Require {
 		return null;
 	}
 
-	public function filter_upgrader_pre_download( $pre, $package ) {
+	private function get_license_key(): ?string {
+		$license_key = $this->get_config_value( 'license_key' );
+
+		if ( is_string( $license_key ) && '' !== trim( $license_key ) ) {
+			return trim( $license_key );
+		}
+
+		return null;
+	}
+
+	/**
+	 * The package of the plugin, verified against the configured signing key.
+	 *
+	 * Resolved when the install runs rather than when the hooks are registered, since
+	 * init() runs as early as plugins_loaded where the configuration filters of the
+	 * required plugin may not be in place yet.
+	 */
+	private function get_signed_package(): ?Signed_Package {
+		$signing_key = $this->get_signing_key();
+
+		if ( $signing_key ) {
+			return new Signed_Package( $signing_key );
+		}
+
+		return null;
+	}
+
+	/**
+	 * The basic authorization header for authenticating the download request.
+	 *
+	 * Uses the site hostname as the username to match the WordPress application
+	 * passwords convention, same as the Update Pilot plugin.
+	 */
+	private function get_authorization_header(): ?string {
+		$license_key = $this->get_license_key();
+
+		if ( $license_key ) {
+			$auth_pair = sprintf(
+				'%s:%s',
+				wp_parse_url( home_url(), PHP_URL_HOST ),
+				$license_key
+			);
+
+			return sprintf( 'Basic %s', base64_encode( $auth_pair ) );
+		}
+
+		return null;
+	}
+
+	/**
+	 * Require a valid package signature when downloading the required plugin.
+	 *
+	 * WP core no longer requests the signature verification when downloading the
+	 * package, so the download is performed here instead to enforce it.
+	 *
+	 * @see Signed_Package::download()
+	 *
+	 * @param bool|string|WP_Error $pre      Whether to short-circuit the download.
+	 * @param string               $package  The package URL being downloaded.
+	 * @param WP_Upgrader          $upgrader The upgrader instance.
+	 * @return bool|string|WP_Error
+	 */
+	public function filter_upgrader_pre_download( $pre, $package, $upgrader = null ) {
 		if ( false !== $pre ) {
-			return $pre; // Another filter has short-circuited the download so the WP core signature verification will not run.
+			return $pre; // Another filter has short-circuited the download.
 		}
 
 		// Enforce the signature verification only during the initial install since updates are handled by the plugin.
-		if ( isset( $this->package_signature ) && $this->get_download_url() === $package ) {
-			$this->package_signature->enforce_for_url( $package );
+		if ( $this->get_download_url() !== $package ) {
+			return $pre;
 		}
 
-		return $pre;
+		$signed_package = $this->get_signed_package();
+
+		if ( ! $signed_package ) {
+			return $pre; // No signing key configured so WP core can download the plugin.
+		}
+
+		if ( ! preg_match( '!^(http|https|ftp)://!i', $package ) ) {
+			return $pre; // Local package files are used as is by WP core.
+		}
+
+		if ( $upgrader instanceof WP_Upgrader && isset( $upgrader->skin ) ) {
+			$upgrader->skin->feedback( 'downloading_package', $package );
+		}
+
+		try {
+			return $signed_package->download( $package );
+		} catch ( RuntimeException $e ) {
+			return new WP_Error( 'package_signature_verification_failed', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Add the license key authorization header when downloading the required plugin.
+	 *
+	 * @param array  $args The HTTP request arguments.
+	 * @param string $url  The request URL.
+	 * @return array
+	 */
+	public function filter_http_request_add_auth_headers( array $args, string $url ): array {
+		if ( $this->get_download_url() !== $url ) {
+			return $args;
+		}
+
+		$authorization = $this->get_authorization_header();
+
+		if ( $authorization && empty( $args['headers']['Authorization'] ) ) { // Do not override existing authorization headers.
+			$args['headers']['Authorization'] = $authorization;
+		}
+
+		return $args;
 	}
 
 	private function get_nonce_action(): string {
@@ -166,7 +279,9 @@ class Plugin_Require {
 			return; // Show notice on plugin screen only.
 		}
 
-		if ( null !== $this->package_signature && ! $this->package_signature->can_verify() ) {
+		$signed_package = $this->get_signed_package();
+
+		if ( $signed_package && ! $signed_package->can_verify() ) {
 			$this->errors[] = new WP_Error(
 				'plugin_signature_unsupported',
 				sprintf(
