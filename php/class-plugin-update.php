@@ -6,13 +6,18 @@ use RuntimeException;
 
 class Plugin_Update {
 
-	private $api_url;
+	private string $api_url;
 
-	private $plugin_basename;
+	private string $plugin_basename;
 
-	public function __construct( string $plugin_basename, string $api_url ) {
+	private array $config;
+
+	private ?Package_Signature $package_signature = null;
+
+	public function __construct( string $plugin_basename, string $api_url, array $config = [] ) {
 		$this->plugin_basename = $plugin_basename;
 		$this->api_url = $api_url;
+		$this->config = $config;
 	}
 
 	public function get_slug(): string {
@@ -27,14 +32,22 @@ class Plugin_Update {
 		return $this->api_url;
 	}
 
-	public static function from_update_uri_header( string $plugin_basename ): self {
+	public static function from_update_uri_header( string $plugin_basename, array $config = [] ): self {
 		$plugins = get_plugins();
 
 		if ( ! isset( $plugins[ $plugin_basename ]['UpdateURI'] ) ) {
 			throw new RuntimeException( 'Failed to find the Update URI header in the plugin file' );
 		}
 
-		return new self( $plugin_basename, $plugins[ $plugin_basename ]['UpdateURI'] );
+		return new self( $plugin_basename, $plugins[ $plugin_basename ]['UpdateURI'], $config );
+	}
+
+	private function get_signing_key(): ?string {
+		if ( isset( $this->config['signing_key'] ) && is_string( $this->config['signing_key'] ) && '' !== trim( $this->config['signing_key'] ) ) {
+			return trim( $this->config['signing_key'] );
+		}
+
+		return null;
 	}
 
 	public function init() {
@@ -46,6 +59,37 @@ class Plugin_Update {
 			10,
 			4
 		);
+
+		$signing_key = $this->get_signing_key();
+
+		if ( $signing_key ) {
+			$this->package_signature = new Package_Signature( $signing_key );
+			$this->package_signature->init();
+
+			// Request the package signature verification when downloading the update package.
+			add_filter( 'upgrader_pre_download', [ $this, 'filter_upgrader_pre_download' ], 10, 4 );
+		}
+	}
+
+	/**
+	 * Require a valid package signature when downloading the update package for our plugin.
+	 *
+	 * @param bool|\WP_Error $pre        Whether to short-circuit the download.
+	 * @param string         $package    The package URL being downloaded.
+	 * @param \WP_Upgrader   $upgrader   The upgrader instance.
+	 * @param array          $hook_extra Extra hook arguments including the plugin basename.
+	 * @return bool|\WP_Error
+	 */
+	public function filter_upgrader_pre_download( $pre, $package, $upgrader, $hook_extra ) {
+		if ( false !== $pre ) {
+			return $pre; // Another filter has short-circuited the download so the WP core signature verification will not run.
+		}
+
+		if ( isset( $this->package_signature ) && ! empty( $hook_extra['plugin'] ) && $this->plugin_basename === $hook_extra['plugin'] ) {
+			$this->package_signature->enforce_for_url( $package );
+		}
+
+		return $pre;
 	}
 
 	/**

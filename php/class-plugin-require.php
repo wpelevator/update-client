@@ -14,6 +14,8 @@ class Plugin_Require {
 
 	private array $errors = [];
 
+	private ?Package_Signature $package_signature;
+
 	public function __construct( array $config ) {
 		$this->config = $config;
 	}
@@ -22,10 +24,21 @@ class Plugin_Require {
 		add_action( 'admin_notices', [ $this, 'action_render_notice' ] );
 		add_action( 'network_admin_notices', [ $this, 'action_render_notice' ] );
 		add_action( 'load-plugins.php', [ $this, 'action_install_plugin' ] );
+
+		$signing_key = $this->get_signing_key();
+
+		if ( $signing_key ) {
+			$this->package_signature = new Package_Signature( $signing_key );
+			$this->package_signature->init();
+
+			// Request the package signature verification when downloading the plugin.
+			add_filter( 'upgrader_pre_download', [ $this, 'filter_upgrader_pre_download' ], 10, 2 );
+		}
 	}
 
 	private function get_config(): array {
 		$config_default = [
+			// TODO: Add the signing_key to the default config.
 			'download_url' => 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot',
 			'basename' => 'update-pilot/update-pilot.php',
 			'name' => 'Update Pilot',
@@ -56,6 +69,29 @@ class Plugin_Require {
 
 	private function get_download_url(): string {
 		return (string) $this->get_config_value( 'download_url' );
+	}
+
+	private function get_signing_key(): ?string {
+		$signing_key = $this->get_config_value( 'signing_key' );
+
+		if ( is_string( $signing_key ) && '' !== trim( $signing_key ) ) {
+			return trim( $signing_key );
+		}
+
+		return null;
+	}
+
+	public function filter_upgrader_pre_download( $pre, $package ) {
+		if ( false !== $pre ) {
+			return $pre; // Another filter has short-circuited the download so the WP core signature verification will not run.
+		}
+
+		// Enforce the signature verification only during the initial install since updates are handled by the plugin.
+		if ( isset( $this->package_signature ) && $this->get_download_url() === $package ) {
+			$this->package_signature->enforce_for_url( $package );
+		}
+
+		return $pre;
 	}
 
 	private function get_nonce_action(): string {
@@ -128,6 +164,18 @@ class Plugin_Require {
 
 		if ( ! $screen || ! in_array( $screen->id, [ 'plugins', 'plugins-network' ], true ) ) {
 			return; // Show notice on plugin screen only.
+		}
+
+		if ( null !== $this->package_signature && ! $this->package_signature->can_verify() ) {
+			$this->errors[] = new WP_Error(
+				'plugin_signature_unsupported',
+				sprintf(
+					/* translators: %s: Required plugin name. */
+					__( 'The PHP Sodium extension is required to verify the authenticity of the %s plugin downloads.' ),
+					$this->get_config_value( 'name' )
+				),
+				[ 'type' => 'warning' ]
+			);
 		}
 
 		$update_plugin = $this->get_update_plugin();
