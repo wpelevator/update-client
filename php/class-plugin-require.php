@@ -34,31 +34,16 @@ class Plugin_Require {
 
 	private function get_config(): array {
 		$config_default = [
-			// TODO: Add the signing_key to the default config.
-			'license_key' => null,
 			'download_url' => 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot',
 			'basename' => 'update-pilot/update-pilot.php',
 			'name' => 'Update Pilot',
 			'notice' => __( 'The Update Pilot plugin is required' ),
 			'network' => true,
+			'license_key' => null,
+			'signing_key' => null,
 		];
 
-		$config = array_merge( $config_default, $this->config );
-
-		/**
-		 * Filters the configuration for requiring the plugin.
-		 *
-		 * The filter name includes the basename of the required plugin (resolved from
-		 * the unfiltered configuration) so that multiple bundled copies of the library
-		 * can be targeted independently. It is distinct from the Plugin_Update
-		 * configuration filter to allow for plugins that are involved in both roles.
-		 *
-		 * @param array $config The required plugin configuration.
-		 */
-		return apply_filters(
-			sprintf( 'wpelevator_update_client__require_config__%s', $config['basename'] ),
-			$config
-		);
+		return array_merge( $config_default, $this->config );
 	}
 
 	private function get_config_value( string $key ) {

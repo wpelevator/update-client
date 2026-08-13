@@ -8,11 +8,13 @@ To check for updates for plugins and themes hosted outside of the WordPress.org 
 
 This library enables the following update workflows:
 
-1. Require a dedicated updater plugin to be installed and active (such as [Update Pilot](https://wpelevator.com/plugins/update-pilot)). Best approach since it enables network-only instalation which is decoupled from the plugin activation state.
+1. Require another plugin to be installed and active. This is useful for a dedicated updater plugin such as [Update Pilot](https://wpelevator.com/plugins/update-pilot), but `Plugin_Require` can install and activate any plugin package you configure.
 
 2. Bundle the updater functionality with your plugin. Requires the plugin to be active (also on the main network site on multisite) to check for updates. Possible to move the updater logic into a separate plugin file within your plugin (yes, WordPress does support this) to enable the updater logic even when the core plugin is selectively disabled.
 
-### Option 1: Require the Updater Plugin
+### Option 1: Require Another Plugin
+
+Use `Plugin_Require` when your plugin depends on another plugin being present. The required plugin does not have to be Update Pilot: configure its package download URL, plugin basename, display name, notice text, and whether it should be network-activated.
 
 ```php
 <?php
@@ -26,11 +28,11 @@ This library enables the following update workflows:
 
 $update_notice = new WPElevator\Update_Client\Plugin_Require(
 	[
-		'download_url' => 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot',
-		'basename' => 'update-pilot/update-pilot.php',
-		'name' => 'Update Pilot',
-		'notice' => 'The Update Pilot plugin is required to enable updates to Your Plugin.', // "Install" or "Activate" button is appended to this notice.
-		'network' => true,
+		'download_url' => 'https://updates.example.com/api/download/acme-updater',
+		'basename' => 'acme-updater/acme-updater.php',
+		'name' => 'Acme Updater',
+		'notice' => 'The Acme Updater plugin is required to enable updates to Your Plugin.', // "Install" or "Activate" button is appended to this notice.
+		'network' => false,
 		'signing_key' => 'y6BGnVLNL2AZLLKJzRHrDBTvMri+cLtvmMHBnf1M2S8=', // Optional. Base64 encoded Ed25519 public key used to sign the plugin package.
 		'license_key' => 'your-license-key', // Optional. License key used to authenticate the plugin download.
 	]
@@ -71,31 +73,7 @@ The update URL must implement the [WordPress plugin update API endpoint](https:/
 
 Both `Plugin_Update` and `Plugin_Require` accept an optional `license_key` configuration value -- the license key required by the update server to authorize the requests. When set, the key is sent as an HTTP basic authorization header with the site hostname as the username (`base64( site-host:license-key )`), matching the WordPress application passwords convention used by the [Update Pilot](https://wpelevator.com/plugins/update-pilot) plugin and server.
 
-For `Plugin_Update` the header is added to both the update check request and the update package download. For `Plugin_Require` the header is added to the download request of the required plugin (the `download_url`); once the required plugin is installed, it manages any license keys for the subsequent updates itself.
-
-Instead of hardcoding the key in the configuration, it can also be resolved dynamically (from an option, a constant, a secrets store, etc.) using the configuration filters which can adjust any of the configuration values. The filter names are distinct for each class and include the basename of the plugin being updated (for `Plugin_Update`) or the basename of the required plugin (for `Plugin_Require`):
-
-```php
-// Adjust the Plugin_Update configuration for your plugin:
-add_filter(
-	'wpelevator_update_client__update_config__your-plugin/your-plugin.php',
-	function ( array $config ): array {
-		$config['license_key'] = get_option( 'your_plugin_license_key' );
-
-		return $config;
-	}
-);
-
-// Adjust the Plugin_Require configuration for the required plugin:
-add_filter(
-	'wpelevator_update_client__require_config__update-pilot/update-pilot.php',
-	function ( array $config ): array {
-		$config['license_key'] = get_option( 'your_plugin_license_key' );
-
-		return $config;
-	}
-);
-```
+For `Plugin_Update` the header is added to both the update check request and the update package download. For `Plugin_Require` the header is added only to the download request of the required plugin (the `download_url`). The required plugin is responsible for its own update configuration after it is installed.
 
 ## Package Signature Verification
 

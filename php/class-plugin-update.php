@@ -47,45 +47,27 @@ class Plugin_Update {
 		return $this->api_url;
 	}
 
-	public static function from_update_uri_header( string $plugin_basename, array $config = [] ): self {
-		$plugins = get_plugins();
-
-		if ( ! isset( $plugins[ $plugin_basename ]['UpdateURI'] ) ) {
-			throw new RuntimeException( 'Failed to find the Update URI header in the plugin file' );
-		}
-
-		return new self( $plugin_basename, $plugins[ $plugin_basename ]['UpdateURI'], $config );
-	}
-
 	private function get_config(): array {
 		$config_default = [
 			'signing_key' => null,
 			'license_key' => null,
 		];
 
-		/**
-		 * Filters the plugin update configuration.
-		 *
-		 * The filter name includes the basename of the plugin being updated so that
-		 * multiple bundled copies of the library can be targeted independently. It is
-		 * distinct from the Plugin_Require configuration filter to allow for plugins
-		 * that are involved in both roles.
-		 *
-		 * Allows adjusting or resolving the configuration dynamically (from an option,
-		 * a constant, a secrets store, etc.) instead of passing it to the constructor.
-		 *
-		 * @param array $config The plugin update configuration.
-		 */
-		return apply_filters(
-			sprintf( 'wpelevator_update_client__update_config__%s', $this->plugin_basename ),
-			array_merge( $config_default, $this->config )
-		);
+		return array_merge( $config_default, $this->config );
 	}
 
 	private function get_config_value( string $key ) {
 		$config = $this->get_config();
 
-		return $config[ $key ] ?? null;
+		if ( isset( $config[ $key ] ) ) {
+			if ( is_callable( $config[ $key ] ) ) {
+				return call_user_func( $config[ $key ] );
+			}
+
+			return $config[ $key ];
+		}
+
+		return null;
 	}
 
 	private function get_signing_key(): ?string {
@@ -352,6 +334,7 @@ class Plugin_Update {
 	private function request_plugin_information( object $args ): ?object {
 		$request_args = [
 			'timeout' => 15,
+			'user-agent' => 'WordPress/' . get_bloginfo( 'version' ) . '; ' . home_url(),
 		];
 
 		$authorization = $this->get_authorization_header();

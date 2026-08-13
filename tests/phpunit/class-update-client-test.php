@@ -145,23 +145,25 @@ class Update_Client_Test extends WP_UnitTestCase {
 		);
 	}
 
-	public function test_config_is_read_when_the_update_runs_rather_than_when_hooked() {
+	public function test_callable_config_is_read_when_the_update_runs_rather_than_when_hooked() {
 		$plugin_basename = 'example-plugin/example-plugin.php';
 		$package_url = 'https://updates.example.com/wp-json/update-pilot/v1/download/example/example-plugin';
+		$license_key = null;
 
-		$update = new Plugin_Update( $plugin_basename, 'https://updates.example.com/wp-json/update-pilot/v1/plugins' );
+		$update = new Plugin_Update(
+			$plugin_basename,
+			'https://updates.example.com/wp-json/update-pilot/v1/plugins',
+			[
+				'license_key' => function () use ( &$license_key ) {
+					return $license_key;
+				},
+			]
+		);
 
 		$update->init();
 
-		// Registered only after init(), as a plugin loading later on plugins_loaded would.
-		add_filter(
-			sprintf( 'wpelevator_update_client__update_config__%s', $plugin_basename ),
-			function ( array $config ): array {
-				$config['license_key'] = 'late-key';
-
-				return $config;
-			}
-		);
+		// Resolved only after init(), as a plugin loading later on plugins_loaded would.
+		$license_key = 'late-key';
 
 		apply_filters( 'upgrader_pre_download', false, $package_url, $this->get_plugin_upgrader(), [ 'plugin' => $plugin_basename ] );
 
@@ -628,7 +630,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 		remove_filter( 'pre_http_request', $blocked, 10 );
 	}
 
-	public function test_plugin_update_config_filter_overrides_license_key() {
+	public function test_plugin_update_callable_config_resolves_license_key() {
 		$plugin_basename = 'example-plugin/example-plugin.php';
 
 		$this->fake_installed_plugin( $plugin_basename );
@@ -637,30 +639,22 @@ class Update_Client_Test extends WP_UnitTestCase {
 			$plugin_basename,
 			'https://updates.example.com/wp-json/update-pilot/v1/plugins',
 			[
-				'license_key' => 'config-key',
+				'license_key' => function (): string {
+					return 'callable-key';
+				},
 			]
 		);
-
-		$override = function ( array $config ): array {
-			$config['license_key'] = 'filtered-key';
-
-			return $config;
-		};
-
-		add_filter( sprintf( 'wpelevator_update_client__update_config__%s', $plugin_basename ), $override );
 
 		$update->init();
 
 		$this->do_update_check( $update, $request_args );
 
-		remove_filter( sprintf( 'wpelevator_update_client__update_config__%s', $plugin_basename ), $override );
-
 		$this->assertIsArray( $request_args, 'Update check request is sent to the update server' );
 
 		$this->assertSame(
-			$this->get_authorization_header_for_key( 'filtered-key' ),
+			$this->get_authorization_header_for_key( 'callable-key' ),
 			$request_args['headers']['Authorization'] ?? null,
-			'The config filter overrides the configured license key'
+			'Callable config values are resolved when the update runs'
 		);
 	}
 
@@ -900,35 +894,28 @@ class Update_Client_Test extends WP_UnitTestCase {
 		);
 	}
 
-	public function test_plugin_require_config_filter_overrides_license_key() {
-		$download_url = 'https://updates.example.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot';
-
+	public function test_plugin_require_does_not_register_update_pilot_plugins() {
 		$require = new Plugin_Require(
 			[
-				'download_url' => $download_url,
-				'license_key' => 'config-key',
+				'basename' => 'update-pilot/update-pilot.php',
+				'for_plugin' => 'example-plugin/example-plugin.php',
+				'license_key' => 'secret-key',
+				'signing_key' => self::PUBLIC_KEY,
 			]
 		);
 
-		$override = function ( array $config ): array {
-			$config['license_key'] = 'filtered-key';
-
-			return $config;
-		};
-
-		// The filter name includes the basename of the required plugin (the default config).
-		add_filter( 'wpelevator_update_client__require_config__update-pilot/update-pilot.php', $override );
-
 		$require->init();
 
-		$download_request = apply_filters( 'http_request_args', [ 'headers' => [] ], $download_url );
+		$registered_plugins = apply_filters( 'update_pilot__plugins', [] );
 
-		remove_filter( 'wpelevator_update_client__require_config__update-pilot/update-pilot.php', $override );
-
-		$this->assertSame(
-			$this->get_authorization_header_for_key( 'filtered-key' ),
-			$download_request['headers']['Authorization'] ?? null,
-			'The config filter overrides the configured license key'
+		$this->assertNotContains(
+			[
+				'plugin' => 'example-plugin/example-plugin.php',
+				'license_key' => 'secret-key',
+				'signing_key' => self::PUBLIC_KEY,
+			],
+			$registered_plugins,
+			'Plugin_Require does not mix required-plugin credentials into Update Pilot plugin configuration'
 		);
 	}
 
