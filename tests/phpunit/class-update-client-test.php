@@ -233,6 +233,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 				$plugin_basename => [
 					'id' => 'https://updates.example.com/wp-json/update-pilot/v1/plugins',
 					'slug' => dirname( $plugin_basename ),
+					'plugin' => $plugin_basename,
 					'package' => 'https://updates.example.com/wp-json/update-pilot/v1/download/example/example-plugin',
 					'version' => $version,
 					'new_version' => $version,
@@ -255,12 +256,12 @@ class Update_Client_Test extends WP_UnitTestCase {
 		);
 	}
 
-	private function do_update_check(
-		Plugin_Update $update,
+	private function do_hostname_update_check(
 		?array &$request_args,
 		string $plugin_basename = 'example-plugin/example-plugin.php',
+		string $installed_version = '1.0.0',
 		string $available_version = '1.1.0'
-	): object {
+	) {
 		$request_args = null;
 		$request_count = 0;
 
@@ -281,27 +282,30 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		add_filter( 'pre_http_request', $intercept, 10, 3 );
 
-		$updates = new stdClass();
-		$updates->last_checked = time();
-		$updates->response = [];
-		$updates->no_update = [];
-		$updates->checked = [];
-
-		$updates = apply_filters( 'pre_set_site_transient_update_plugins', $updates );
+		$resolved = apply_filters(
+			$this->get_hostname_filter(),
+			false,
+			[
+				'Version' => $installed_version,
+				'UpdateURI' => 'https://updates.example.com/wp-json/update-pilot/v1/plugins',
+			],
+			$plugin_basename,
+			[]
+		);
 
 		remove_filter( 'pre_http_request', $intercept, 10 );
 
 		$this->update_check_request_count = $request_count;
 
-		return $updates;
+		return $resolved;
 	}
 
 	/**
-	 * Number of update check requests made by the last do_update_check() call.
+	 * Number of update check requests made by the last do_hostname_update_check() call.
 	 */
 	private int $update_check_request_count = 0;
 
-	public function test_plugin_update_sends_license_key_with_update_check() {
+	public function test_plugin_update_sends_license_key_with_hostname_update_check() {
 		$plugin_basename = 'example-plugin/example-plugin.php';
 
 		$this->fake_installed_plugin( $plugin_basename );
@@ -316,7 +320,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$update->init();
 
-		$updates = $this->do_update_check( $update, $request_args );
+		$resolved = $this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertIsArray( $request_args, 'Update check request is sent to the update server' );
 
@@ -326,14 +330,14 @@ class Update_Client_Test extends WP_UnitTestCase {
 			'Update check request includes the license key as basic auth with the site hostname as the username'
 		);
 
-		$this->assertArrayHasKey(
-			$plugin_basename,
-			$updates->response,
-			'Update response is registered for the plugin with a valid license key'
+		$this->assertSame(
+			'1.1.0',
+			$resolved->new_version ?? null,
+			'Update response is returned for the plugin with a valid license key'
 		);
 	}
 
-	public function test_update_check_posts_the_plugin_headers_the_update_server_expects() {
+	public function test_hostname_update_check_posts_the_plugin_headers_the_update_server_expects() {
 		$plugin_basename = 'example-plugin/example-plugin.php';
 
 		$this->fake_installed_plugin( $plugin_basename, '1.0.0' );
@@ -342,7 +346,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$update->init();
 
-		$updates = $this->do_update_check( $update, $request_args );
+		$resolved = $this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertIsArray( $request_args, 'Update check request is sent to the update server' );
 
@@ -367,57 +371,92 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$this->assertSame(
 			'1.1.0',
-			$updates->response[ $plugin_basename ]->new_version ?? null,
+			$resolved->new_version ?? null,
 			'The update keyed by the plugin basename is read out of the response'
 		);
 	}
 
-	public function test_update_check_ignores_a_package_that_is_not_newer() {
+	public function test_hostname_update_check_returns_error_when_plugin_update_data_is_missing() {
 		$plugin_basename = 'example-plugin/example-plugin.php';
 
-		$this->fake_installed_plugin( $plugin_basename, '2.0.0' );
+		$this->fake_installed_plugin( $plugin_basename, '1.0.0' );
 
 		$update = new Plugin_Update( $plugin_basename, 'https://updates.example.com/wp-json/update-pilot/v1/plugins' );
 
 		$update->init();
 
-		// The update server responds with its latest package whether or not it is newer.
-		$updates = $this->do_update_check( $update, $request_args, $plugin_basename, '2.0.0' );
+		$request_args = null;
 
-		$this->assertArrayNotHasKey(
+		$intercept = function ( $pre, $args, $url ) use ( &$request_args ) {
+			$request_args = $args;
+
+			return [
+				'headers' => [],
+				'body' => '{}',
+				'response' => [
+					'code' => 200,
+					'message' => 'OK',
+				],
+				'cookies' => [],
+			];
+		};
+
+		add_filter( 'pre_http_request', $intercept, 10, 3 );
+
+		$resolved = apply_filters(
+			$this->get_hostname_filter(),
+			false,
+			[
+				'Version' => '1.0.0',
+				'UpdateURI' => 'https://updates.example.com/wp-json/update-pilot/v1/plugins',
+			],
 			$plugin_basename,
-			$updates->response,
-			'The installed version is not offered as an update to itself'
+			[]
 		);
 
-		$this->assertArrayHasKey(
-			$plugin_basename,
-			$updates->no_update,
-			'The current version is recorded so the plugin is not treated as unchecked'
-		);
+		remove_filter( 'pre_http_request', $intercept, 10 );
 
-		$this->assertSame(
-			'2.0.0',
-			$updates->checked[ $plugin_basename ] ?? null,
-			'The checked version is the installed one rather than the one on offer'
-		);
+		$this->assertIsArray( $request_args, 'The update server is asked for the registered plugin' );
+		$this->assertWPError( $resolved, 'Missing plugin update data is treated as an invalid API response' );
 	}
 
-	public function test_update_check_is_skipped_when_the_plugin_is_not_installed() {
-		$this->fake_installed_plugin( 'another-plugin/another-plugin.php' );
+	public function test_hostname_update_check_returns_api_errors() {
+		$plugin_basename = 'example-plugin/example-plugin.php';
 
-		$update = new Plugin_Update(
-			'example-plugin/example-plugin.php',
-			'https://updates.example.com/wp-json/update-pilot/v1/plugins'
-		);
+		$this->fake_installed_plugin( $plugin_basename, '1.0.0' );
+
+		$update = new Plugin_Update( $plugin_basename, 'https://updates.example.com/wp-json/update-pilot/v1/plugins' );
 
 		$update->init();
 
-		$updates = $this->do_update_check( $update, $request_args );
+		$intercept = function () {
+			return [
+				'headers' => [],
+				'body' => 'Server error',
+				'response' => [
+					'code' => 500,
+					'message' => 'Internal Server Error',
+				],
+				'cookies' => [],
+			];
+		};
 
-		$this->assertNull( $request_args, 'No update check is made for a plugin that is not installed' );
+		add_filter( 'pre_http_request', $intercept, 10, 3 );
 
-		$this->assertEmpty( $updates->response, 'No update is offered for a plugin that is not installed' );
+		$resolved = apply_filters(
+			$this->get_hostname_filter(),
+			false,
+			[
+				'Version' => '1.0.0',
+				'UpdateURI' => 'https://updates.example.com/wp-json/update-pilot/v1/plugins',
+			],
+			$plugin_basename,
+			[]
+		);
+
+		remove_filter( 'pre_http_request', $intercept, 10 );
+
+		$this->assertWPError( $resolved, 'Failed update checks return a WP_Error to the hostname filter' );
 	}
 
 	public function test_update_by_hostname_returns_the_update_for_our_plugin() {
@@ -519,11 +558,11 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$update->init();
 
-		$this->do_update_check( $update, $request_args );
+		$this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertSame( 1, $this->update_check_request_count, 'The first update check asks the update server' );
 
-		$updates = $this->do_update_check( $update, $request_args );
+		$resolved = $this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertSame(
 			0,
@@ -533,7 +572,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$this->assertSame(
 			'1.1.0',
-			$updates->response['example-plugin/example-plugin.php']->new_version ?? null,
+			$resolved->new_version ?? null,
 			'The reused update is still offered'
 		);
 	}
@@ -575,6 +614,8 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		remove_filter( 'pre_http_request', $intercept, 10 );
 
+		$this->assertIsObject( $information, 'The plugin information callback returns an object as WordPress core expects' );
+
 		$this->assertSame(
 			'Example Plugin',
 			$information->name ?? null,
@@ -598,6 +639,35 @@ class Update_Client_Test extends WP_UnitTestCase {
 			$requested_args['headers']['Authorization'] ?? null,
 			'The license key authorizes the plugin information request'
 		);
+	}
+
+	public function test_plugin_information_array_response_is_rejected() {
+		$update = new Plugin_Update(
+			'example-plugin/example-plugin.php',
+			'https://updates.example.com/wp-json/update-pilot/v1/plugins'
+		);
+
+		$update->init();
+
+		$intercept = function () {
+			return [
+				'headers' => [],
+				'body' => '[{"name":"Example Plugin","slug":"example-plugin","version":"1.1.0"}]',
+				'response' => [
+					'code' => 200,
+					'message' => 'OK',
+				],
+				'cookies' => [],
+			];
+		};
+
+		add_filter( 'pre_http_request', $intercept, 10, 3 );
+
+		$information = apply_filters( 'plugins_api', false, 'plugin_information', (object) [ 'slug' => 'example-plugin' ] );
+
+		remove_filter( 'pre_http_request', $intercept, 10 );
+
+		$this->assertWPError( $information, 'Plugin information responses must be objects, not arrays' );
 	}
 
 	public function test_plugin_information_of_other_plugins_is_left_alone() {
@@ -647,7 +717,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$update->init();
 
-		$this->do_update_check( $update, $request_args );
+		$this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertIsArray( $request_args, 'Update check request is sent to the update server' );
 
@@ -670,7 +740,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$update->init();
 
-		$this->do_update_check( $update, $request_args );
+		$this->do_hostname_update_check( $request_args, $plugin_basename );
 
 		$this->assertIsArray( $request_args, 'Update check request is sent to the update server' );
 

@@ -67,7 +67,7 @@ $plugin_update = new WPElevator\Update_Client\Plugin_Update(
 add_action( 'plugins_loaded', [ $plugin_update, 'init' ] );
 ```
 
-The update URL must implement the [WordPress plugin update API endpoint](https://wpelevator.com/guides/replace-wordpress-update-apis). The client posts the current plugin headers as a `plugins` JSON payload and returns the matching update object for the configured plugin basename. It also handles the WordPress plugin information modal through the same endpoint.
+The update URL must implement the [WordPress plugin update API endpoint](https://wpelevator.com/guides/replace-wordpress-update-apis). The client posts the current plugin headers as a `plugins` JSON payload and returns the matching update object for the configured plugin basename. The API response must include the configured plugin basename; request failures or invalid response data are returned to WordPress as `WP_Error` values from the Update URI hostname filter. It also handles the WordPress plugin information modal through the same endpoint.
 
 ## License Key Authentication
 

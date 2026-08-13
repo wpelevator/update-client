@@ -3,6 +3,7 @@
 namespace WPElevator\Update_Client;
 
 use RuntimeException;
+use WP_Error;
 
 class Plugin_Update {
 
@@ -130,8 +131,6 @@ class Plugin_Update {
 	}
 
 	public function init() {
-		add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'check_update' ] );
-
 		add_filter(
 			sprintf( 'update_plugins_%s', wp_parse_url( $this->api_url, PHP_URL_HOST ) ),
 			[ $this, 'update_by_hostname' ],
@@ -157,11 +156,11 @@ class Plugin_Update {
 	 *
 	 * @see Signed_Package::download()
 	 *
-	 * @param bool|string|\WP_Error $pre        Whether to short-circuit the download.
+	 * @param bool|string|WP_Error $pre        Whether to short-circuit the download.
 	 * @param string                $package    The package URL being downloaded.
 	 * @param \WP_Upgrader          $upgrader   The upgrader instance.
 	 * @param array                 $hook_extra Extra hook arguments including the plugin basename.
-	 * @return bool|string|\WP_Error
+	 * @return bool|string|WP_Error
 	 */
 	public function filter_upgrader_pre_download( $pre, $package, $upgrader, $hook_extra ) {
 		if ( false !== $pre ) {
@@ -194,7 +193,7 @@ class Plugin_Update {
 		try {
 			return $signed_package->download( $package );
 		} catch ( RuntimeException $e ) {
-			return new \WP_Error( 'package_signature_verification_failed', $e->getMessage() );
+			return new WP_Error( 'package_signature_verification_failed', $e->getMessage() );
 		}
 	}
 
@@ -207,17 +206,22 @@ class Plugin_Update {
 	 * @return array
 	 */
 	public function filter_http_request_add_auth_headers( array $args, string $url ): array {
-		if ( ! in_array( $url, $this->download_urls_with_auth, true ) ) {
-			return $args;
-		}
+		if ( in_array( $url, $this->download_urls_with_auth, true ) ) {
+			$authorization = $this->get_authorization_header();
 
-		$authorization = $this->get_authorization_header();
-
-		if ( $authorization && empty( $args['headers']['Authorization'] ) ) { // Do not override existing authorization headers.
-			$args['headers']['Authorization'] = $authorization;
+			if ( $authorization && empty( $args['headers']['Authorization'] ) ) { // Do not override existing authorization headers.
+				$args['headers']['Authorization'] = $authorization;
+			}
 		}
 
 		return $args;
+	}
+
+	private function get_api_error( Update_Api_Exception $e ): WP_Error {
+		return new WP_Error(
+			sprintf( 'update_client_api_error_%d', $e->getCode() ),
+			$e->getMessage()
+		);
 	}
 
 	/**
@@ -250,59 +254,15 @@ class Plugin_Update {
 	* }
 	 */
 	public function update_by_hostname( $update, $plugin_data, $plugin_file, $locales ) {
-		if ( $this->plugin_basename === $plugin_file ) {
-			$our_update = $this->get_update( (array) $plugin_data, (array) $locales );
-
-			if ( $our_update ) {
-				return $our_update;
+		if ( empty( $update ) && $this->plugin_basename === $plugin_file ) {
+			try {
+				return $this->get_update( (array) $plugin_data, (array) $locales );
+			} catch ( Update_Api_Exception $e ) {
+				return $this->get_api_error( $e );
 			}
 		}
 
 		return $update;
-	}
-
-	/**
-	 * Append our update after wp_update_plugins().
-	 * Also called by wp_plugin_update_row().
-	 *
-	 * Covers the plugins whose Update URI header does not point at the configured
-	 * update server, since WP core dispatches the update_plugins_{$hostname} filter
-	 * off that header alone.
-	 *
-	 * @return object
-	 */
-	public function check_update( object $updates ): object {
-		if ( ! isset( $updates->last_checked ) ) {
-			return $updates;
-		}
-
-		$plugin_data = $this->get_plugin_data();
-
-		if ( empty( $plugin_data['Version'] ) ) {
-			return $updates; // The plugin we are responsible for is not installed.
-		}
-
-		$update = $this->get_update( $plugin_data );
-
-		if ( ! $update ) {
-			return $updates;
-		}
-
-		$updates->checked[ $this->plugin_basename ] = $plugin_data['Version'];
-
-		// The update server responds with its latest package, which is not necessarily newer.
-		if ( version_compare( $update->new_version, $plugin_data['Version'], '>' ) ) {
-			unset( $updates->no_update[ $this->plugin_basename ] );
-
-			$updates->response[ $this->plugin_basename ] = $update;
-			$updates->last_checked = time();
-		} else {
-			unset( $updates->response[ $this->plugin_basename ] );
-
-			$updates->no_update[ $this->plugin_basename ] = $update;
-		}
-
-		return $updates;
 	}
 
 	/**
@@ -314,24 +274,18 @@ class Plugin_Update {
 	 * @return false|object|array
 	 */
 	public function filter_plugins_api( $result, $action, $args ) {
-		if ( ! empty( $result ) || 'plugin_information' !== $action ) {
-			return $result;
-		}
-
-		if ( empty( $args->slug ) || $this->get_slug() !== $args->slug ) {
-			return $result; // Not the plugin we are responsible for.
-		}
-
-		$information = $this->request_plugin_information( $args );
-
-		if ( $information ) {
-			return $information;
+		if ( empty( $result ) && 'plugin_information' === $action && ! empty( $args->slug ) && $this->get_slug() === $args->slug ) {
+			try {
+				return $this->fetch_plugin_information( $args );
+			} catch ( Update_Api_Exception $e ) {
+				return $this->get_api_error( $e );
+			}
 		}
 
 		return $result;
 	}
 
-	private function request_plugin_information( object $args ): ?object {
+	private function fetch_plugin_information( object $args ): object {
 		$request_args = [
 			'timeout' => 15,
 			'user-agent' => 'WordPress/' . get_bloginfo( 'version' ) . '; ' . home_url(),
@@ -357,16 +311,31 @@ class Plugin_Update {
 		);
 
 		if ( is_wp_error( $response ) ) {
-			return null;
+			throw new Update_Api_Exception(
+				$response->get_error_message(),
+				Update_Api_Exception::REQUEST_FAILED
+			);
 		}
 
-		$information = json_decode( wp_remote_retrieve_body( $response ), true );
+		$response_code = wp_remote_retrieve_response_code( $response );
 
-		if ( empty( $information ) || ! is_array( $information ) ) {
-			return null;
+		if ( 200 > $response_code || 300 <= $response_code ) {
+			throw new Update_Api_Exception(
+				sprintf( 'Plugin information request failed with HTTP %d', $response_code ),
+				Update_Api_Exception::REQUEST_FAILED
+			);
 		}
 
-		return (object) $information; // Match the WP core info response.
+		$information = json_decode( wp_remote_retrieve_body( $response ) );
+
+		if ( is_object( $information ) && ! empty( $information->slug ) ) {
+			return $information;
+		}
+
+		throw new Update_Api_Exception(
+			sprintf( 'Missing plugin information for %s', $args->slug ),
+			Update_Api_Exception::INVALID_RESPONSE_DATA
+		);
 	}
 
 	private function get_plugin_data(): array {
@@ -387,7 +356,7 @@ class Plugin_Update {
 	 */
 	private function get_update( array $plugin_data, array $locales = [] ): ?object {
 		if ( ! isset( $this->update ) ) {
-			$this->update = $this->request_update( $plugin_data, $locales ) ?? false;
+			$this->update = $this->fetch_update( $plugin_data, $locales ) ?? false;
 		}
 
 		if ( $this->update ) {
@@ -406,8 +375,12 @@ class Plugin_Update {
 	 *
 	 * @param array    $plugin_data Plugin headers of the installed plugin.
 	 * @param string[] $locales     Installed locales to look up translations for.
+	 *
+	 * @return object|null The update object for our plugin, or null if no update is available.
+	 *
+	 * @throws Update_Api_Exception If the update server request fails or returns invalid data.
 	 */
-	private function request_update( array $plugin_data, array $locales ): ?object {
+	private function fetch_update( array $plugin_data, array $locales ): ?object {
 		$payload = [
 			'body' => [
 				'plugins' => wp_json_encode( [ $this->plugin_basename => $plugin_data ] ),
@@ -426,30 +399,37 @@ class Plugin_Update {
 		$response = wp_remote_post( $this->get_api_url(), $payload );
 
 		if ( is_wp_error( $response ) ) {
-			return null;
+			throw new Update_Api_Exception(
+				$response->get_error_message(),
+				Update_Api_Exception::REQUEST_FAILED
+			);
 		}
 
-		$updates = json_decode( wp_remote_retrieve_body( $response ), true );
+		$response_code = wp_remote_retrieve_response_code( $response );
 
-		if ( empty( $updates[ $this->plugin_basename ] ) || ! is_array( $updates[ $this->plugin_basename ] ) ) {
-			return null;
+		if ( 200 > $response_code || 300 <= $response_code ) {
+			throw new Update_Api_Exception(
+				sprintf( 'Update request failed with HTTP %d', $response_code ),
+				Update_Api_Exception::REQUEST_FAILED
+			);
 		}
 
-		$update = $updates[ $this->plugin_basename ]; // Extract the update for our plugin.
+		$updates = json_decode( wp_remote_retrieve_body( $response ) );
 
-		$version = $update['version'] ?? $update['new_version'] ?? null;
-		if ( empty( $version ) ) {
-			return null;
+		if ( ! is_object( $updates ) ) {
+			throw new Update_Api_Exception(
+				sprintf( 'Invalid update data for %s', $this->plugin_basename ),
+				Update_Api_Exception::INVALID_RESPONSE_DATA
+			);
 		}
 
-		$update['version'] = $version;
-		$update['new_version'] = $version;
-		$update['plugin'] = $this->plugin_basename;
-
-		if ( empty( $update['slug'] ) ) {
-			$update['slug'] = $this->get_slug();
+		if ( empty( $updates->{$this->plugin_basename} ) || ! is_object( $updates->{$this->plugin_basename} ) ) {
+			throw new Update_Api_Exception(
+				sprintf( 'Missing update data for %s', $this->plugin_basename ),
+				Update_Api_Exception::INVALID_RESPONSE_DATA
+			);
 		}
 
-		return (object) $update;
+		return $updates->{$this->plugin_basename};
 	}
 }
