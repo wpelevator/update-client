@@ -340,10 +340,11 @@ class Plugin_Update {
 			);
 		}
 
-		$information = json_decode( wp_remote_retrieve_body( $response ) );
+		// WP core expects the nested sections, banners and icons as arrays, like plugins_api() decodes them.
+		$information = json_decode( wp_remote_retrieve_body( $response ), true );
 
-		if ( is_object( $information ) && ! empty( $information->slug ) ) {
-			return $information;
+		if ( is_array( $information ) && ! empty( $information['slug'] ) ) {
+			return (object) $information;
 		}
 
 		throw new Update_Api_Exception(
@@ -428,22 +429,23 @@ class Plugin_Update {
 			);
 		}
 
-		$updates = json_decode( wp_remote_retrieve_body( $response ) );
+		// WP core expects the nested icons, banners and translations as arrays, like wp_update_plugins() decodes them.
+		$updates = json_decode( wp_remote_retrieve_body( $response ), true );
 
-		if ( ! is_object( $updates ) ) {
+		if ( ! is_array( $updates ) ) {
 			throw new Update_Api_Exception(
 				sprintf( 'Invalid update data for %s', $this->plugin_basename ),
 				Update_Api_Exception::INVALID_RESPONSE_DATA
 			);
 		}
 
-		if ( empty( $updates->{$this->plugin_basename} ) || ! is_object( $updates->{$this->plugin_basename} ) ) {
+		if ( empty( $updates[ $this->plugin_basename ] ) || ! is_array( $updates[ $this->plugin_basename ] ) ) {
 			throw new Update_Api_Exception(
 				sprintf( 'Missing update data for %s', $this->plugin_basename ),
 				Update_Api_Exception::INVALID_RESPONSE_DATA
 			);
 		}
 
-		return $updates->{$this->plugin_basename};
+		return (object) $updates[ $this->plugin_basename ];
 	}
 }

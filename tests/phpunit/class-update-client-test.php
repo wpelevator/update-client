@@ -250,6 +250,15 @@ class Update_Client_Test extends WP_UnitTestCase {
 					'package' => 'https://updates.example.com/wp-json/update-pilot/v1/download/example/example-plugin',
 					'version' => $version,
 					'new_version' => $version,
+					'icons' => [
+						'svg' => 'https://updates.example.com/example-plugin/icon.svg',
+					],
+					'translations' => [
+						[
+							'language' => 'lv',
+							'package' => 'https://updates.example.com/example-plugin/lv.zip',
+						],
+					],
 				],
 			]
 		);
@@ -519,6 +528,16 @@ class Update_Client_Test extends WP_UnitTestCase {
 			$resolved->plugin ?? null,
 			'The update identifies the plugin it belongs to'
 		);
+
+		$this->assertIsArray(
+			$resolved->icons ?? null,
+			'Icons are an array since WP core reads them with array access on the updates screen'
+		);
+
+		$this->assertIsArray(
+			$resolved->translations[0] ?? null,
+			'Translations are arrays since WP core reads each of them with array access'
+		);
 	}
 
 	public function test_update_by_hostname_leaves_other_plugins_on_the_same_host_alone() {
@@ -612,7 +631,7 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 			return [
 				'headers' => [],
-				'body' => '{"name":"Example Plugin","slug":"example-plugin","version":"1.1.0"}',
+				'body' => '{"name":"Example Plugin","slug":"example-plugin","version":"1.1.0","sections":{"description":"Example description"},"banners":{"low":"https://updates.example.com/example-plugin/banner.png"}}',
 				'response' => [
 					'code' => 200,
 					'message' => 'OK',
@@ -628,6 +647,16 @@ class Update_Client_Test extends WP_UnitTestCase {
 		remove_filter( 'pre_http_request', $intercept, 10 );
 
 		$this->assertIsObject( $information, 'The plugin information callback returns an object as WordPress core expects' );
+
+		$this->assertIsArray(
+			$information->sections ?? null,
+			'Sections are an array since install_plugin_information() writes the sanitized sections back with array access'
+		);
+
+		$this->assertIsArray(
+			$information->banners ?? null,
+			'Banners are an array since install_plugin_information() reads them with array access'
+		);
 
 		$this->assertSame(
 			'Example Plugin',
