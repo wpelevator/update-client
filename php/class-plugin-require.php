@@ -188,10 +188,24 @@ class Plugin_Require {
 		}
 
 		try {
-			return $signed_package->download( $package );
+			$file = $signed_package->download( $package );
 		} catch ( RuntimeException $e ) {
 			return new WP_Error( 'package_signature_verification_failed', $e->getMessage() );
 		}
+
+		// Reached only when the signature was verified since the download throws otherwise.
+		if ( $upgrader instanceof WP_Upgrader && isset( $upgrader->skin ) ) {
+			$upgrader->skin->feedback(
+				sprintf(
+					/* translators: %s: Base64 encoded public signing key. */
+					__( 'Verified the package signature with the signing key %s.' ),
+					'<span class="code pre">%s</span>'
+				),
+				$signed_package->get_public_key()
+			);
+		}
+
+		return $file;
 	}
 
 	/**

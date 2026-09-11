@@ -31,6 +31,13 @@ class Signed_Package {
 	}
 
 	/**
+	 * Base64 encoded Ed25519 public key that the packages are verified against.
+	 */
+	public function get_public_key(): string {
+		return $this->public_key;
+	}
+
+	/**
 	 * If the current environment supports the package signature verification.
 	 */
 	public static function can_verify(): bool {

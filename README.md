@@ -95,7 +95,7 @@ Because `download_url()` returns the same file path whether it verified the pack
 
 The update server must provide the package signature as a base64 encoded Ed25519 signature of the raw SHA-384 digest of the package ZIP file, as expected by `verify_file_signature()` in WP core. The signature is read from the `X-Content-Signature` HTTP response header of the package download, which is how the Update Pilot Server serves it. Alternatively WP core fetches newline-separated signatures from a `{package-url}.sig` file, but only if the package URL path ends with `.zip` or `.tar.gz` (or if a custom signature URL is provided via the `wp_signature_url` filter), so this does not apply to the typical REST API download endpoints.
 
-`Signed_Package::download()` throws a `RuntimeException` when the package cannot be downloaded or verified. `Plugin_Update` and `Plugin_Require` convert it into the `WP_Error` that the `upgrader_pre_download` filter expects.
+`Signed_Package::download()` throws a `RuntimeException` when the package cannot be downloaded or verified. `Plugin_Update` and `Plugin_Require` convert it into the `WP_Error` that the `upgrader_pre_download` filter expects. Once the package is verified, they add a "Verified the package signature with the signing key …" message to the upgrader skin, which shows up between the download and unpacking steps of the update progress.
 
 Note that signature verification requires the PHP Sodium extension (or the `sodium_compat` polyfill bundled with WordPress core). `Plugin_Require` displays a warning notice on the Plugins screen if signature verification is not supported by the environment.
 

@@ -96,6 +96,12 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$this->assertIsString( $package_file, 'The signed update package is downloaded for the registered plugin' );
 
+		$this->assertContains(
+			sprintf( 'Verified the package signature with the signing key %s.', base64_encode( sodium_crypto_sign_publickey( $keypair ) ) ),
+			$upgrader->skin->get_upgrade_messages(),
+			'The upgrade progress reports the verified signature'
+		);
+
 		$this->assertSame(
 			self::PACKAGE_CONTENTS,
 			file_get_contents( $package_file ),
@@ -129,15 +135,22 @@ class Update_Client_Test extends WP_UnitTestCase {
 
 		$this->fake_package_download( $package_url, null );
 
+		$upgrader = $this->get_plugin_upgrader();
+
 		$package_file = apply_filters(
 			'upgrader_pre_download',
 			false,
 			$package_url,
-			$this->get_plugin_upgrader(),
+			$upgrader,
 			[ 'plugin' => $plugin_basename ]
 		);
 
 		$this->assertWPError( $package_file, 'An unsigned update package aborts the update' );
+
+		$this->assertEmpty(
+			preg_grep( '/Verified the package signature/', $upgrader->skin->get_upgrade_messages() ),
+			'The upgrade progress does not report a signature that was never verified'
+		);
 
 		$this->assertFalse(
 			(bool) $package_file->get_error_data( 'softfail-filename' ),
@@ -852,6 +865,12 @@ class Update_Client_Test extends WP_UnitTestCase {
 		$package_file = apply_filters( 'upgrader_pre_download', false, $download_url, $upgrader, $install_hook_extra );
 
 		$this->assertIsString( $package_file, 'The signed plugin package is downloaded for the known download URL' );
+
+		$this->assertContains(
+			sprintf( 'Verified the package signature with the signing key %s.', base64_encode( sodium_crypto_sign_publickey( $keypair ) ) ),
+			$upgrader->skin->get_upgrade_messages(),
+			'The install progress reports the verified signature'
+		);
 
 		$this->assertSame(
 			self::PACKAGE_CONTENTS,
