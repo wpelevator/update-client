@@ -12,6 +12,13 @@ class Plugin_Require {
 
 	private const INSTALL_ACTION = 'wpelevator-update-client-install-plugin';
 
+	private const UPDATE_PILOT_DOWNLOAD_URL = 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot';
+
+	/**
+	 * Base64 encoded Ed25519 public key of the WP Elevator update server that signs the Update Pilot package.
+	 */
+	private const UPDATE_PILOT_SIGNING_KEY = 'E8AgVyLHxvnyXgB7sqge9Jp9Eo4eAQc+8gfC1KU90iI=';
+
 	private array $config;
 
 	private array $errors = [];
@@ -34,16 +41,32 @@ class Plugin_Require {
 
 	private function get_config(): array {
 		$config_default = [
-			'download_url' => 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot',
+			'download_url' => self::UPDATE_PILOT_DOWNLOAD_URL,
 			'basename' => 'update-pilot/update-pilot.php',
 			'name' => 'Update Pilot',
 			'notice' => __( 'The Update Pilot plugin is required' ),
 			'network' => true,
 			'license_key' => null,
-			'signing_key' => null,
+			'signing_key' => $this->get_default_signing_key(),
 		];
 
 		return array_merge( $config_default, $this->config );
+	}
+
+	/**
+	 * The signing key of the Update Pilot package, when downloading Update Pilot
+	 * from the WP Elevator update server.
+	 *
+	 * Packages from any other download URL are signed by their own vendor, if at all.
+	 */
+	private function get_default_signing_key(): ?string {
+		$download_url = $this->config['download_url'] ?? self::UPDATE_PILOT_DOWNLOAD_URL;
+
+		if ( self::UPDATE_PILOT_DOWNLOAD_URL === $download_url ) {
+			return self::UPDATE_PILOT_SIGNING_KEY;
+		}
+
+		return null;
 	}
 
 	private function get_config_value( string $key ) {

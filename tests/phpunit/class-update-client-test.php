@@ -923,6 +923,33 @@ class Update_Client_Test extends WP_UnitTestCase {
 		);
 	}
 
+	public function test_plugin_require_verifies_update_pilot_download_by_default() {
+		$this->skip_without_sodium();
+
+		$download_url = 'https://updates.wpelevator.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot';
+
+		$this->fake_package_download( $download_url, null );
+
+		// Call the filter callbacks directly since other plugins in the test environment may require Update Pilot too.
+		$require = new Plugin_Require( [] );
+
+		$this->assertWPError(
+			$require->filter_upgrader_pre_download( false, $download_url, $this->get_plugin_upgrader() ),
+			'The default Update Pilot download requires the WP Elevator signature'
+		);
+
+		$require_opt_out = new Plugin_Require(
+			[
+				'signing_key' => null,
+			]
+		);
+
+		$this->assertFalse(
+			$require_opt_out->filter_upgrader_pre_download( false, $download_url, $this->get_plugin_upgrader() ),
+			'An explicit null signing key opts out of the default signature verification'
+		);
+	}
+
 	public function test_plugin_require_adds_auth_header_to_download() {
 		$download_url = 'https://updates.example.com/wp-json/update-pilot/v1/download/wpelevator/update-pilot';
 
